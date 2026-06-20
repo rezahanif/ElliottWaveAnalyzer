@@ -1,4 +1,4 @@
-from models.MonoWave import MonoWaveUp
+from src.waveconf.legacy_models.MonoWave import MonoWaveUp
 import numpy as np
 
 

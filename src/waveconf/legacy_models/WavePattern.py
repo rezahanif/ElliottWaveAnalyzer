@@ -1,5 +1,5 @@
-from models.WaveRules import WaveRule
-from models.MonoWave import MonoWaveUp, MonoWaveDown
+from src.waveconf.legacy_models.WaveRules import WaveRule
+from src.waveconf.legacy_models.MonoWave import MonoWaveUp, MonoWaveDown
 
 
 class WavePattern:

@@ -1,9 +1,9 @@
 from __future__ import annotations
-from models.WavePattern import WavePattern
-from models.WaveRules import Impulse, LeadingDiagonal
-from models.WaveAnalyzer import WaveAnalyzer
-from models.WaveOptions import WaveOptionsGenerator5
-from models.helpers import plot_pattern
+from src.waveconf.legacy_models.WavePattern import WavePattern
+from src.waveconf.legacy_models.WaveRules import Impulse, LeadingDiagonal
+from src.waveconf.legacy_models.WaveAnalyzer import WaveAnalyzer
+from src.waveconf.legacy_models.WaveOptions import WaveOptionsGenerator5
+from src.waveconf.legacy_models.helpers import plot_pattern
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -13,7 +13,7 @@ from pprint import pprint
 # start_date = end_date - pd.DateOffset(days=360)
 # df = yf.download('MSFT', start=start_date, end=end_date)
 
-df = pd.read_csv(r'data\btc-usd_1d.csv')
+df = pd.read_csv(r'data/raw/btc-usd_1d.csv')
 idx_start = np.argmin(np.array(list(df['Low'])))
 
 wa = WaveAnalyzer(df=df, verbose=False) # .reset_index()

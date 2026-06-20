@@ -1,4 +1,4 @@
-from models.WaveOptions import WaveOptionsGenerator5, WaveOptionsGenerator3
+from src.waveconf.legacy_models.WaveOptions import WaveOptionsGenerator5, WaveOptionsGenerator3
 
 # WaveOptions for 5 fold impulsive wave
 wo = WaveOptionsGenerator5(5)

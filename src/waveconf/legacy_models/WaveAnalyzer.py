@@ -1,8 +1,8 @@
-from models.MonoWave import MonoWaveUp, MonoWaveDown
-from models.WaveOptions import WaveOptionsGenerator5, WaveOptionsGenerator3
-from models.WaveCycle import WaveCycle
-from models.WavePattern import WavePattern
-from models.WaveRules import Impulse, Correction, TDWave
+from src.waveconf.legacy_models.MonoWave import MonoWaveUp, MonoWaveDown
+from src.waveconf.legacy_models.WaveOptions import WaveOptionsGenerator5, WaveOptionsGenerator3
+from src.waveconf.legacy_models.WaveCycle import WaveCycle
+from src.waveconf.legacy_models.WavePattern import WavePattern
+from src.waveconf.legacy_models.WaveRules import Impulse, Correction, TDWave
 import numpy as np
 import pandas as pd
 

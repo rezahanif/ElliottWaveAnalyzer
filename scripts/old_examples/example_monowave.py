@@ -1,9 +1,9 @@
-from models.MonoWave import MonoWaveDown, MonoWaveUp
-from models.helpers import plot_monowave
+from src.waveconf.legacy_models.MonoWave import MonoWaveDown, MonoWaveUp
+from src.waveconf.legacy_models.helpers import plot_monowave
 import numpy as np
 import pandas as pd
 
-df = pd.read_csv(r'data\btc-usd_1d.csv')
+df = pd.read_csv(r'data/raw/btc-usd_1d.csv')
 lows = np.array(list(df['Low']))
 highs = np.array(list(df['High']))
 dates = np.array(list(df['Date']))

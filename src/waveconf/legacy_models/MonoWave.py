@@ -1,6 +1,6 @@
 from __future__ import annotations
 import numpy as np
-from models.functions import hi, lo, next_hi, next_lo
+from src.waveconf.legacy_models.functions import hi, lo, next_hi, next_lo
 
 class MonoWave:
     def __init__(self,
