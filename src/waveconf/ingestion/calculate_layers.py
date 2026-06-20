@@ -43,7 +43,7 @@ def generate_volatility_layers(input_path='data/ohlcv/BTC_4H.json'):
 
     # 6. Track B: The "Behavioral / Cyclic" Layer (14-Day calendar lookback)
     df['atr_14'] = df['true_range'].ewm(alpha=1/atr_14_periods, adjust=False).mean()
-    df['behavioral_threshold_pct'] = round((df['atr_14'] * 3 / df['close']) * 100, 2)
+    df['behavioral_threshold_pct'] = round((df['atr_14'] * 1.5 / df['close']) * 100, 2)
 
     # Clean up calculation columns before exporting
     df_clean = df[['timestamp_ms', 'date', 'open', 'high', 'low', 'close', 'volume', 

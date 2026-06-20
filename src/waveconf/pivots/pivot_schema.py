@@ -81,7 +81,7 @@ class PivotLayer(str, Enum):
 
     MACRO  →  confirmed by wall_street_threshold_pct (20-day ATR × 3)
               represents institutional / major swing pivots
-    MICRO  →  confirmed by behavioral_threshold_pct (14-day ATR × 3)
+    MICRO  →  confirmed by behavioral_threshold_pct (14-day ATR × 1.5)
               represents sub-wave / internal structure pivots
     """
     MACRO = "macro"   # wall_street_threshold_pct layer
