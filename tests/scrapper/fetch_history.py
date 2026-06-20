@@ -156,26 +156,38 @@ def fetch_historical_btc_4h():
     print(f"Success! Saved {len(df)} total 4H candles to {output_path}\n")
 
 def fetch_historical_btc_1w():
-    print("--- Fetching BTC/USDT 1W candles from Yahoo Finance (since 2011) ---")
-    ticker = yf.Ticker("BTC-USD")
-    # Fetch from 2011 to today (historical data starts in 2014 for BTC-USD on Yahoo Finance)
-    yf_df = ticker.history(start="2011-01-01", end=datetime.now().strftime("%Y-%m-%d"), interval="1wk")
+    print("--- Fetching BTC/USDT 1W candles from Binance (since 2017-08-17) ---")
+    exchange = ccxt.binance({
+        'enableRateLimit': True,
+        'verify': False, 
+    })
     
-    yf_data = []
-    for index, row in yf_df.iterrows():
-        ts_ms = int(index.timestamp() * 1000)
-        yf_data.append([
-            ts_ms,
-            round(float(row['Open']), 2),
-            round(float(row['High']), 2),
-            round(float(row['Low']), 2),
-            round(float(row['Close']), 2),
-            round(float(row['Volume']), 2)
-        ])
-    print(f"Loaded {len(yf_data)} weekly candles from Yahoo Finance.")
+    since = exchange.parse8601('2017-08-17T00:00:00Z') # Binance launch date
+    binance_data = []
+    
+    while since < exchange.milliseconds():
+        try:
+            candles = exchange.fetch_ohlcv('BTC/USDT', timeframe='1w', since=since, limit=1000)
+            if not candles:
+                break
+            
+            first_date = datetime.utcfromtimestamp(candles[0][0]/1000).strftime('%Y-%m-%d %H:%M')
+            last_date = datetime.utcfromtimestamp(candles[-1][0]/1000).strftime('%Y-%m-%d %H:%M')
+            print(f"Fetched {len(candles)} candles from {first_date} to {last_date}")
+            
+            binance_data.extend(candles)
+            since = candles[-1][0] + (7 * 24 * 60 * 60 * 1000)
+        except Exception as e:
+            print(f"Error fetching from Binance: {e}")
+            print("\n[TIP] If you get 403 / certificate errors, your ISP is blocking Binance.")
+            break
+
+    if not binance_data:
+        print("No 1W data fetched.")
+        return
 
     columns = ["timestamp_ms", "open", "high", "low", "close", "volume"]
-    df = pd.DataFrame(yf_data, columns=columns)
+    df = pd.DataFrame(binance_data, columns=columns)
     df = df.drop_duplicates(subset=['timestamp_ms']).sort_values(by='timestamp_ms').reset_index(drop=True)
     
     final_output = {
