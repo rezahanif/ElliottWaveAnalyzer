@@ -94,8 +94,6 @@ class FibTarget:
             f"FibTarget(${self.price:,.2f} | {self.method} "
             f"| ratio={self.ratio} | anchor={self.anchor_label}@{self.anchor_price:,.2f})"
         )
-
-
 @dataclass
 class ClusterResult:
     """
@@ -161,9 +159,7 @@ class CorrectionTargets:
     c_zone:           Tuple[float, float]    # C range
     b_breach_price:   Optional[float]        # price B must exceed (expanded/running flat)
     b_breach_expected: bool
-
-
-# ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────
 # FibonacciEngine
 # ─────────────────────────────────────────────────────────────
 
@@ -305,8 +301,7 @@ class FibonacciEngine:
             self.extension(anchor, swing_range, r, direction, anchor_label)
             for r in self.FIB_RATIOS["extend"]
         ]
-
-    # ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────
     # 2. Impulse wave targets
     # ─────────────────────────────────────────────────────────
 
@@ -447,7 +442,6 @@ class FibonacciEngine:
             b_breach_price    = round(b_breach_price, 2) if b_breach_price else None,
             b_breach_expected = b_breach_expected,
         )
-
     # ─────────────────────────────────────────────────────────
     # 4. Pattern measured-move target
     # ─────────────────────────────────────────────────────────
@@ -660,6 +654,12 @@ class FibonacciEngine:
                 best_delta = delta
                 best_ratio = r
 
-        if best_ratio is not None and best_delta <= best_ratio * tol:
+        if best_delta <= tol:
             return best_ratio
         return None
+
+
+# ─────────────────────────────────────────────────────────────
+# Optional typing import (Python 3.8 compat)
+# ─────────────────────────────────────────────────────────────
+from typing import Optional
