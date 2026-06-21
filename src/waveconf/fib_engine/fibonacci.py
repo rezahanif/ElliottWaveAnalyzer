@@ -654,7 +654,7 @@ class FibonacciEngine:
                 best_delta = delta
                 best_ratio = r
 
-        if best_delta <= tol:
+        if best_delta <= best_ratio * tol:
             return best_ratio
         return None
 
