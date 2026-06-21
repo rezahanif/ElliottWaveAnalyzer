@@ -38,8 +38,9 @@ def train_tft(
     batch_size: int = 64,
     lr: float = 1e-3,
     out_path: str = "models/wave_model.pt",
-    hidden_size: int = 16,
-    attention_head_size: int = 4,
+    hidden_size: int = 32,
+    attention_head_size: int = 2,
+    accelerator: str = "auto",
 ):
     print("\n" + "=" * 60)
     print("Initializing TFT Training")
@@ -127,19 +128,23 @@ def train_tft(
         mode="min",
     )
 
-    # Force CPU training to avoid MPS/CUDA device discovery overhead or issues
-    # unless GPU is explicitly present and works.
-    gpus = 0
-    if torch.cuda.is_available():
-        gpus = 1
-        print("  [trainer] GPU (CUDA) available. Running on GPU.")
+    # Configure accelerator and devices
+    if accelerator == "auto":
+        if torch.cuda.is_available():
+            accel, devices = "gpu", 1
+            print("  [trainer] GPU (CUDA) available. Running on GPU.")
+        else:
+            accel, devices = "cpu", "auto"
+            print("  [trainer] Defaulting to CPU. (Apple MPS has known op-coverage/failed assertions in TFT on macOS and is disabled by default).")
     else:
-        print("  [trainer] GPU not available or not selected. Running on CPU.")
+        accel = accelerator
+        devices = 1 if accelerator in ["gpu", "mps"] else "auto"
+        print(f"  [trainer] Using user-specified accelerator: {accel}")
 
     trainer = pl.Trainer(
         max_epochs=epochs,
-        accelerator="gpu" if gpus > 0 else "cpu",
-        devices=1 if gpus > 0 else "auto",
+        accelerator=accel,
+        devices=devices,
         gradient_clip_val=0.1,
         callbacks=[early_stop_callback, checkpoint_callback],
         enable_checkpointing=True,
@@ -172,8 +177,9 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64, help="DataLoader batch size")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--out", default="models/wave_model.pt", help="Path to save the model weights")
-    parser.add_argument("--hidden-size", type=int, default=16, help="TFT hidden state size")
-    parser.add_argument("--heads", type=int, default=4, help="Attention heads")
+    parser.add_argument("--hidden-size", type=int, default=32, help="TFT hidden state size")
+    parser.add_argument("--heads", type=int, default=2, help="Attention heads")
+    parser.add_argument("--accelerator", default="auto", help="Accelerator (cpu, gpu, mps, auto)")
 
     args = parser.parse_args()
 
@@ -187,6 +193,7 @@ def main():
         out_path=args.out,
         hidden_size=args.hidden_size,
         attention_head_size=args.heads,
+        accelerator=args.accelerator,
     )
 
 

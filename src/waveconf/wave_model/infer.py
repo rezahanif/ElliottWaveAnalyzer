@@ -47,7 +47,7 @@ def predict_tft(
         with torch.no_grad():
             # Run prediction to get raw quantiles
             # mode="quantiles" returns shape (samples, prediction_length, num_quantiles)
-            predictions = model.predict(prep_df, mode="quantiles", trainer_kwargs={"accelerator": "cpu"})
+            predictions = model.predict(prep_df, mode="quantiles", trainer_kwargs={"accelerator": "cpu", "logger": False, "enable_checkpointing": False})
 
         # Extract predictions
         quantiles = predictions[0].numpy()  # shape: (60, 3) where quantiles are (q10, q50, q90)

@@ -122,8 +122,8 @@ def create_tft_dataset(
 def build_tft_model(
     dataset: TimeSeriesDataSet,
     learning_rate: float = 1e-3,
-    hidden_size: int = 16,
-    attention_head_size: int = 4,
+    hidden_size: int = 32,
+    attention_head_size: int = 2,
     dropout: float = 0.1,
 ) -> TemporalFusionTransformer:
     """

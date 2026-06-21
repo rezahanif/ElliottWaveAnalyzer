@@ -674,6 +674,7 @@ def run_pipeline(
     # Step 9: SQLite write
     record = {
         "timeframe":             timeframe,
+        "direction":             fib_result['direction'] if fib_result else "neutral",
         "btc_close_at_signal":   current_price,
         "cluster_valid":         int(fib_result['cluster_valid']) if fib_result else 0,
         "cluster_upper":         fib_result['cluster_upper']    if fib_result else None,
