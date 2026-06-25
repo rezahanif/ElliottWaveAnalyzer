@@ -5,18 +5,38 @@ ConfluenceChecker — pipeline step [5].
 
 Compares TFT quantile bands against Fibonacci target zones,
 applies economic calendar adjustments, and computes scenario probabilities.
+
+Signal tiers:
+  AGGRESSIVE — original loose criteria, captures more signals with MFE potential.
+  SELECTIVE  — tightened criteria for highest-conviction entries.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from enum import Enum
 from typing import List, Optional
 
 from src.waveconf.fib_engine.fibonacci import ClusterResult
 from src.waveconf.ingestion.economic_calender import CalendarContext, EconomicCalendarEngine
 from src.waveconf.confluence.cluster_check import is_confluent, compute_probability_mass
 from src.waveconf.confluence.entry_plan import generate_entry_zones
+
+
+class SignalTier(str, Enum):
+    """Signal conviction tier."""
+    SELECTIVE  = "selective"   # Tight: 1.5% overlap, prob >= 15%, horizon <= 14d
+    AGGRESSIVE = "aggressive"  # Original: 2.0% overlap, no prob gate
+
+
+# ── Tier thresholds (centralised for easy tuning) ─────────────────────
+SELECTIVE_CLUSTER_TOLERANCE_PCT  = 1.5   # q50 must be within ±1.5% of cluster
+SELECTIVE_MIN_COMBINED_PROB      = 0.15  # at least 15% probability mass overlap
+SELECTIVE_MAX_HORIZON_DAYS       = 14    # prefer shorter horizons for path safety
+SELECTIVE_MIN_STRENGTH            = 0.50  # minimum adjusted strength
+
+AGGRESSIVE_CLUSTER_TOLERANCE_PCT = 2.0   # original 2% tolerance
 
 
 @dataclass
@@ -51,6 +71,10 @@ class ConfluenceReport:
     combined_prob: float
     best_horizon_days: int
 
+    # Signal tier classification
+    signal_tier: SignalTier = SignalTier.AGGRESSIVE
+    tier_reasons: str = ""  # human-readable explanation of why tier was assigned
+
     calendar_ctx: Optional[CalendarContext] = None
 
     def to_dict(self) -> dict:
@@ -71,6 +95,8 @@ class ConfluenceReport:
             "scenario_b_prob": round(self.scenario_b_prob, 4),
             "combined_prob": round(self.combined_prob, 4),
             "best_horizon_days": self.best_horizon_days,
+            "signal_tier": self.signal_tier.value,
+            "tier_reasons": self.tier_reasons,
         }
 
 
@@ -85,18 +111,22 @@ class ConfluenceChecker:
         cluster: ClusterResult,
         tft_predictions: List[TFTPrediction],
         zone_tolerance_pct: float = 1.0,
-        cluster_overlap_tolerance_pct: float = 2.0,
+        cluster_overlap_tolerance_pct: float = AGGRESSIVE_CLUSTER_TOLERANCE_PCT,
     ) -> ConfluenceReport:
         """
         Analyze predictions against Fibonacci zones and produce a ConfluenceReport.
+
+        Every signal that passes the AGGRESSIVE gate is valid.  A subset of
+        those signals additionally qualify for the SELECTIVE tier when they
+        satisfy tighter overlap, probability, and horizon constraints.
         """
         if not tft_predictions:
             raise ValueError("tft_predictions list cannot be empty")
 
         # 1. Identify if any horizon is confluent (q50 overlaps the cluster zone)
+        #    Uses the AGGRESSIVE (loose) tolerance so we don't reject any signal
         confluent_preds = []
         for pred in tft_predictions:
-            # Check overlap if cluster is valid
             if cluster.cluster_valid:
                 if is_confluent(pred.q50, cluster.cluster_lower, cluster.cluster_upper, cluster_overlap_tolerance_pct):
                     confluent_preds.append(pred)
@@ -128,6 +158,15 @@ class ConfluenceChecker:
         cal_ctx = self.calendar_engine.get_context(as_of)
         adjusted_strength = self.calendar_engine.adjust_confidence(cluster.cluster_strength, cal_ctx)
 
+        # 6. ── Tier classification ────────────────────────────────────────
+        signal_tier, tier_reasons = self._classify_tier(
+            confluence_valid=confluence_valid,
+            cluster=cluster,
+            best_pred=best_pred,
+            combined_prob=combined_prob,
+            adjusted_strength=adjusted_strength,
+        )
+
         return ConfluenceReport(
             as_of=as_of,
             confluence_valid=confluence_valid,
@@ -145,5 +184,68 @@ class ConfluenceChecker:
             scenario_b_prob=prob_b,
             combined_prob=combined_prob,
             best_horizon_days=best_pred.horizon_days,
+            signal_tier=signal_tier,
+            tier_reasons=tier_reasons,
             calendar_ctx=cal_ctx,
         )
+
+    # ── private ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _classify_tier(
+        confluence_valid: bool,
+        cluster: ClusterResult,
+        best_pred: TFTPrediction,
+        combined_prob: float,
+        adjusted_strength: float,
+    ) -> tuple[SignalTier, str]:
+        """
+        Classify a signal as SELECTIVE or AGGRESSIVE.
+
+        SELECTIVE criteria (ALL must pass):
+          1. q50 within ±SELECTIVE_CLUSTER_TOLERANCE_PCT of cluster bounds
+          2. combined_prob >= SELECTIVE_MIN_COMBINED_PROB
+          3. best_horizon_days <= SELECTIVE_MAX_HORIZON_DAYS
+          4. adjusted_strength >= SELECTIVE_MIN_STRENGTH
+
+        Everything else that still has confluence_valid=True is AGGRESSIVE.
+        """
+        if not confluence_valid:
+            return SignalTier.AGGRESSIVE, "No confluence — default aggressive"
+
+        fail_reasons: list[str] = []
+
+        # Check 1: Tight cluster overlap
+        tight_overlap = is_confluent(
+            best_pred.q50,
+            cluster.cluster_lower,
+            cluster.cluster_upper,
+            SELECTIVE_CLUSTER_TOLERANCE_PCT,
+        )
+        if not tight_overlap:
+            fail_reasons.append(
+                f"q50 outside ±{SELECTIVE_CLUSTER_TOLERANCE_PCT}% of cluster"
+            )
+
+        # Check 2: Minimum probability mass
+        if combined_prob < SELECTIVE_MIN_COMBINED_PROB:
+            fail_reasons.append(
+                f"combined_prob {combined_prob:.2%} < {SELECTIVE_MIN_COMBINED_PROB:.0%}"
+            )
+
+        # Check 3: Horizon preference
+        if best_pred.horizon_days > SELECTIVE_MAX_HORIZON_DAYS:
+            fail_reasons.append(
+                f"horizon {best_pred.horizon_days}d > {SELECTIVE_MAX_HORIZON_DAYS}d"
+            )
+
+        # Check 4: Minimum adjusted strength
+        if adjusted_strength < SELECTIVE_MIN_STRENGTH:
+            fail_reasons.append(
+                f"strength {adjusted_strength:.2f} < {SELECTIVE_MIN_STRENGTH}"
+            )
+
+        if not fail_reasons:
+            return SignalTier.SELECTIVE, "All selective criteria passed"
+
+        return SignalTier.AGGRESSIVE, "; ".join(fail_reasons)

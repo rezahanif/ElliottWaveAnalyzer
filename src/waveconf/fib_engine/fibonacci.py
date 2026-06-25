@@ -43,8 +43,10 @@ from __future__ import annotations
 
 import os
 import yaml
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -234,6 +236,7 @@ class FibonacciEngine:
         direction:    str,
         anchor_label: str = "anchor",
         method_note:  str = "",
+        use_log_scale: bool = False,
     ) -> FibTarget:
         """
         Compute a Fibonacci extension target.
@@ -242,8 +245,15 @@ class FibonacciEngine:
         direction='bearish' → subtract (project downward)
         direction='bullish' → add (project upward)
         """
-        offset = swing_range * ratio
-        price  = anchor_price - offset if direction == "bearish" else anchor_price + offset
+        if use_log_scale:
+            log_anchor = math.log(anchor_price)
+            log_offset = swing_range * ratio
+            log_target = log_anchor - log_offset if direction == "bearish" else log_anchor + log_offset
+            price = math.exp(log_target)
+        else:
+            offset = swing_range * ratio
+            price  = anchor_price - offset if direction == "bearish" else anchor_price + offset
+            
         return FibTarget(
             price        = round(price, 2),
             method       = method_note or f"extension_{ratio}_from_{anchor_label}",
@@ -510,73 +520,202 @@ class FibonacciEngine:
         c_top:     float,
         b_low:     float,
         direction: str = "bearish",
+        ab_range:  Optional[float] = None,
+        a_price:   Optional[float] = None,
+        version:   str = "v2_linear",
     ) -> ClusterResult:
         """
-        Compute the two-tool Fibonacci cluster from the spec.
-
-        Tool A: 2.618 extension from C top
-            - Anchor: C_top
-            - Range:  C_top - B_low  (the full B→C rally range)
-            - Target: C_top - (range × 2.618)  [bearish]
-
-        Tool B: 1.618 extension from B→C
-            - Anchor: B_low (the origin of the B→C move)
-            - Range:  C_top - B_low
-            - Target: B_low - (range × 1.618)  [bearish]
-
-        Parameters
-        ----------
-        c_top       float   Confirmed structural top (C wave / wave 3 high)
-                            Must be confirmed by divergence (caller's responsibility)
-        b_low       float   B wave low (origin of the corrective rally to C)
-        direction   str     'bearish' (project down) or 'bullish' (project up)
-
-        Returns
-        -------
-        ClusterResult with both targets, cluster validation, and scenario plan
+        Compute the two-tool Fibonacci cluster confluence output.
+        Supports 5 historical/experimental versions for comparison and regression checks:
+        
+        - 'v1_buggy': Original buggy implementation (Target A == Target B mathematically).
+        - 'v2_linear': Linear 3-pivot logic (resolves the v1 bug using ab_range).
+        - 'v3_gated': Linear 3-pivot logic with macro trend regime gating constraints.
+        - 'v4_log': Log-scale calculations, protecting against negative prices for large swings.
+        - 'v5_relaxed': Log-scale calculations with bc_range fallback when ab_range is missing,
+                        and a wider cluster threshold (15%) to restore signal volume.
+                        Keeps correct math while accepting approximate confluence.
         """
         if direction not in ("bearish", "bullish"):
             raise ValueError(f"direction must be 'bearish' or 'bullish', got '{direction}'")
 
-        bc_range = abs(c_top - b_low)
+        if version == "v1_buggy":
+            # Buggy logic: Tool A and Tool B both use bc_range
+            bc_range = abs(c_top - b_low)
+            target_a = self.extension(
+                anchor_price=c_top,
+                swing_range=bc_range,
+                ratio=self.tool_a_ratio,
+                direction=direction,
+                anchor_label="C_top",
+                method_note=f"extension_{self.tool_a_ratio}_from_C_top"
+            )
+            target_b = self.extension(
+                anchor_price=b_low,
+                swing_range=bc_range,
+                ratio=self.tool_b_ratio,
+                direction=direction,
+                anchor_label="B_low",
+                method_note=f"extension_{self.tool_b_ratio}_from_B_low"
+            )
+            has_wave_a = True
 
-        # Tool A: 2.618 extension from C top
-        target_a = self.extension(
-            anchor_price = c_top,
-            swing_range  = bc_range,
-            ratio        = self.tool_a_ratio,
-            direction    = direction,
-            anchor_label = "C_top",
-            method_note  = f"extension_{self.tool_a_ratio}_from_C_top",
-        )
+        elif version in ("v2_linear", "v3_gated"):
+            # Linear 3-pivot logic using ab_range (to decouple the swings)
+            bc_range = abs(c_top - b_low)
+            b_range = ab_range if ab_range is not None else bc_range
+            
+            target_a = self.extension(
+                anchor_price=c_top,
+                swing_range=bc_range,
+                ratio=self.tool_a_ratio,
+                direction=direction,
+                anchor_label="C_top",
+                method_note=f"extension_{self.tool_a_ratio}_from_C_top"
+            )
+            target_b = self.extension(
+                anchor_price=b_low,
+                swing_range=b_range,
+                ratio=self.tool_b_ratio,
+                direction=direction,
+                anchor_label="B_low",
+                method_note=f"extension_{self.tool_b_ratio}_from_B_low"
+            )
+            has_wave_a = ab_range is not None
 
-        # Tool B: 1.618 extension from B low (using B→C as the measured range)
-        target_b = self.extension(
-            anchor_price = b_low,
-            swing_range  = bc_range,
-            ratio        = self.tool_b_ratio,
-            direction    = direction,
-            anchor_label = "B_low",
-            method_note  = f"extension_{self.tool_b_ratio}_from_B_low",
-        )
+        elif version == "v4_log":
+            # Log-scale calculation (prevents negative price target projections)
+            log_c = math.log(c_top)
+            log_b = math.log(b_low)
+            log_bc_range = abs(log_c - log_b)
+            
+            # Anchor B price in log is log_b for bearish, and log_c for bullish
+            b_price_log = log_b if direction == "bearish" else log_c
+            
+            if a_price is not None:
+                log_ab_range = abs(math.log(a_price) - b_price_log)
+                log_b_range = log_ab_range
+                has_wave_a = True
+            elif ab_range is not None:
+                # Approximated log range if only linear ab_range is provided
+                b_price_val = b_low if direction == "bearish" else c_top
+                log_b_range = abs(math.log(b_price_val + ab_range) - b_price_log)
+                has_wave_a = True
+            else:
+                log_b_range = log_bc_range
+                has_wave_a = False
+                
+            target_a = self.extension(
+                anchor_price=c_top,
+                swing_range=log_bc_range,
+                ratio=self.tool_a_ratio,
+                direction=direction,
+                anchor_label="C_top",
+                method_note=f"extension_{self.tool_a_ratio}_from_C_top",
+                use_log_scale=True
+            )
+            target_b = self.extension(
+                anchor_price=b_low,
+                swing_range=log_b_range,
+                ratio=self.tool_b_ratio,
+                direction=direction,
+                anchor_label="B_low",
+                method_note=f"extension_{self.tool_b_ratio}_from_B_low",
+                use_log_scale=True
+            )
+        elif version == "v5_relaxed":
+            # v5_relaxed: log-scale math (correct) but uses bc_range as wave-A surrogate
+            # when ab_range is missing, so signals fire even without full 3-pivot history.
+            # Cluster threshold is widened to 15% (vs 2% default) to accept loose confluences.
+            #
+            # Direction-specific ratios:
+            #   Bearish: 2.618× BC from C top (deep extension) / 1.618× AB from B low
+            #   Bullish: 1.618× BC from C bottom (post-correction target) / 1.0× AB from C bottom (measured move)
+            log_c = math.log(c_top)
+            log_b = math.log(b_low)
+            log_bc_range = abs(log_c - log_b)
 
-        # Cluster validation
+            # AB range: the prior swing used for Tool B's measured move
+            # Bearish: AB = A_high → B_low (the decline before C top)
+            # Bullish: AB = A_low → B_high (the rally before C bottom)
+            if a_price is not None:
+                if direction == "bearish":
+                    log_b_range = abs(math.log(a_price) - log_b)
+                else:
+                    # Bullish: AB rally = |log(A_low) - log(B_high)|
+                    log_b_range = abs(math.log(a_price) - log_c)
+                has_wave_a = True
+            elif ab_range is not None:
+                log_b_range = abs(math.log(b_low + ab_range) - log_b)
+                has_wave_a = True
+            else:
+                # Fallback: use bc_range as surrogate for ab_range (wider zone accepted)
+                log_b_range = log_bc_range
+                has_wave_a = True  # Accept even without confirmed wave-A
+
+            if direction == "bearish":
+                # Bearish: project DOWN from the high (c_top) using config ratios
+                ratio_a = self.tool_a_ratio       # 2.618
+                ratio_b = self.tool_b_ratio       # 1.618
+                anchor_a = c_top
+                anchor_b = b_low
+                label_a  = "C_top"
+                label_b  = "B_low"
+                range_a  = log_bc_range
+                range_b  = log_b_range
+            else:
+                # Bullish: project UP from the corrective low (b_low)
+                # Use tighter ratios appropriate for post-correction targets
+                ratio_a = self.tool_b_ratio       # 1.618 (BC extension target)
+                ratio_b = 1.000                    # 1.0× AB measured move
+                anchor_a = b_low
+                anchor_b = b_low
+                label_a  = "C_bottom"
+                label_b  = "C_bottom"
+                range_a  = log_bc_range            # BC swing
+                range_b  = log_b_range             # AB swing
+
+            target_a = self.extension(
+                anchor_price=anchor_a,
+                swing_range=range_a,
+                ratio=ratio_a,
+                direction=direction,
+                anchor_label=label_a,
+                method_note=f"extension_{ratio_a}_from_{label_a}",
+                use_log_scale=True
+            )
+            target_b = self.extension(
+                anchor_price=anchor_b,
+                swing_range=range_b,
+                ratio=ratio_b,
+                direction=direction,
+                anchor_label=label_b,
+                method_note=f"extension_{ratio_b}_from_{label_b}",
+                use_log_scale=True
+            )
+        else:
+            raise ValueError(f"Unknown version: {version}")
+
+        # v5_relaxed uses a wider cluster threshold to restore signal volume
+        effective_threshold = 15.0 if version == "v5_relaxed" else self.cluster_threshold_pct
+
+        # Compute proximity and validation
         proximity_pct = abs(target_a.price - target_b.price) / max(target_a.price, target_b.price) * 100
-        cluster_valid = proximity_pct <= self.cluster_threshold_pct
+        
+        if not has_wave_a:
+            cluster_valid = False
+            cluster_strength = 0.0
+        else:
+            cluster_valid = proximity_pct <= effective_threshold
+            if cluster_valid:
+                cluster_strength = max(0.0, 1.0 - (proximity_pct / effective_threshold))
+            else:
+                cluster_strength = 0.0
 
         cluster_upper = max(target_a.price, target_b.price)
         cluster_lower = min(target_a.price, target_b.price)
         cluster_mid   = (cluster_upper + cluster_lower) / 2
 
-        # Strength: 1.0 at exact coincidence, 0.0 at threshold boundary
-        if cluster_valid:
-            cluster_strength = max(0.0, 1.0 - (proximity_pct / self.cluster_threshold_pct))
-        else:
-            cluster_strength = 0.0
-
-        # Scenario assignment:
-        # Scenario A = first reaction zone (higher price for bearish = target_a typically)
-        # Scenario B = main target (lower price for bearish = target_b typically)
         if direction == "bearish":
             scenario_a = target_a if target_a.price > target_b.price else target_b
             scenario_b = target_b if target_b.price < target_a.price else target_a
@@ -587,7 +726,7 @@ class FibonacciEngine:
         return ClusterResult(
             target_a         = target_a,
             target_b         = target_b,
-            measured_move    = None,   # set via .add_measured_move() if needed
+            measured_move    = None,
             cluster_valid    = cluster_valid,
             proximity_pct    = round(proximity_pct, 4),
             cluster_upper    = round(cluster_upper, 2),

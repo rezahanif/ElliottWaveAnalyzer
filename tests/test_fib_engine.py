@@ -86,16 +86,27 @@ def test_measured_move():
 
 def test_dual_cluster():
     engine = FibonacciEngine()
-    # Bearish dual cluster
-    # c_top = 200, b_low = 100. Range = 100.
-    res = engine.dual_cluster(200.0, 100.0, direction="bearish")
-    # Tool A: 2.618 from C top -> 200 - 261.8 = -61.8
-    # Tool B: 1.618 from B low -> 100 - 161.8 = -61.8
-    assert res.target_a.price == -61.8
-    assert res.target_b.price == -61.8
-    assert res.cluster_valid
-    assert res.proximity_pct == 0.0
-    assert res.cluster_strength == 1.0
+
+    # 1. Bearish dual cluster with independent ab_range (positive prices)
+    # c_top = 10000.0, b_low = 8000.0 (bc_range = 2000.0)
+    # ab_range = 2020.0 (Wave A range)
+    # Target A = 10000.0 - 2000.0 * 2.618 = 4764.0
+    # Target B = 8000.0 - 2020.0 * 1.618 = 4731.64
+    res = engine.dual_cluster(10000.0, 8000.0, direction="bearish", ab_range=2020.0)
+    assert res.target_a.price == 4764.0
+    assert res.target_b.price == 4731.64
+    # Regression guard: assert Target A and Target B are distinct, independent paths
+    assert res.target_a.price != res.target_b.price
+    assert res.cluster_valid is True
+    # proximity_pct = abs(4764.0 - 4731.64) / 4764.0 * 100 = 0.6793%
+    assert abs(res.proximity_pct - 0.6793) < 0.01
+    assert res.cluster_strength > 0.0
+
+    # 2. Bearish dual cluster with missing ab_range (None)
+    # Fallback default should set cluster_valid = False and strength = 0.0
+    res_none = engine.dual_cluster(10000.0, 8000.0, direction="bearish", ab_range=None)
+    assert res_none.cluster_valid is False
+    assert res_none.cluster_strength == 0.0
 
 def test_nearest_fib_level():
     engine = FibonacciEngine()
@@ -115,3 +126,23 @@ def test_invalidation():
     # Bullish case: price drops below level
     assert is_invalidated(99.5, 100.0, "bullish") is True
     assert is_invalidated(100.5, 100.0, "bullish") is False
+
+def test_log_scale_dual_cluster():
+    engine = FibonacciEngine()
+    # Bearish dual cluster with log scale and a_price
+    # c_top = 10000.0, b_low = 8000.0, a_price = 12000.0
+    res = engine.dual_cluster(10000.0, 8000.0, direction="bearish", a_price=12000.0, version="v4_log")
+    
+    # Hand calculation:
+    # log_c = math.log(10000.0) = 9.210340
+    # log_b = math.log(8000.0) = 8.987197
+    # log_bc = 0.2231435
+    # target_a = exp(9.210340 - 2.618 * 0.2231435) = 5575.57
+    #
+    # log_a = math.log(12000.0) = 9.392662
+    # log_ab = abs(log_a - log_b) = 0.405465
+    # target_b = exp(8.987197 - 1.618 * 0.405465) = 4151.21
+    assert abs(res.target_a.price - 5575.57) < 0.05
+    assert abs(res.target_b.price - 4151.21) < 0.05
+    assert res.target_a.price != res.target_b.price
+

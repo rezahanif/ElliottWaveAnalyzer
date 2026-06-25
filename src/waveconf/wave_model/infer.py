@@ -61,19 +61,46 @@ def predict_tft(
 
         last_close = float(hist_rows.iloc[-1]["close"])
 
-        # Accumulate compounded prices
+        # Accumulate log returns and estimate standard deviation to compile quantiles
+        # under a log-normal random walk assumption, preventing exponential explosion.
+        cumulative_mean = 0.0
+        cumulative_var = 0.0
+
         q10_prices = [last_close]
         q50_prices = [last_close]
         q90_prices = [last_close]
 
         for step in range(min(60, len(quantiles))):
-            pct_q10 = float(quantiles[step, 0])
-            pct_q50 = float(quantiles[step, 1])
-            pct_q90 = float(quantiles[step, 2])
+            y_q10 = float(quantiles[step, 0])
+            y_q50 = float(quantiles[step, 1])
+            y_q90 = float(quantiles[step, 2])
 
-            q10_prices.append(q10_prices[-1] * (1.0 + pct_q10))
-            q50_prices.append(q50_prices[-1] * (1.0 + pct_q50))
-            q90_prices.append(q90_prices[-1] * (1.0 + pct_q90))
+            # Convert to log returns. Force a minimum of -0.99 to avoid math domain errors.
+            r_q10 = np.log(max(0.01, 1.0 + y_q10))
+            r_q50 = np.log(max(0.01, 1.0 + y_q50))
+            r_q90 = np.log(max(0.01, 1.0 + y_q90))
+
+            # Mean is the median (q50) log return
+            mean = r_q50
+            # Volatility (standard deviation) estimation using normal distribution quantile factor 1.28155
+            sd_90 = (r_q90 - r_q50) / 1.28155
+            sd_10 = (r_q50 - r_q10) / 1.28155
+            sd = max(0.0, (sd_90 + sd_10) / 2.0)
+
+            cumulative_mean += mean
+            cumulative_var += sd ** 2
+
+            cum_sd = np.sqrt(cumulative_var)
+
+            # Cumulative log return quantiles
+            cum_r_q10 = cumulative_mean - 1.28155 * cum_sd
+            cum_r_q50 = cumulative_mean
+            cum_r_q90 = cumulative_mean + 1.28155 * cum_sd
+
+            # Convert back to absolute prices
+            q10_prices.append(last_close * np.exp(cum_r_q10))
+            q50_prices.append(last_close * np.exp(cum_r_q50))
+            q90_prices.append(last_close * np.exp(cum_r_q90))
 
         # Horizons are 7, 14, 30, 60
         result = {}

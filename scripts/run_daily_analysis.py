@@ -54,6 +54,17 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Load .env file if it exists to populate environment variables
+env_path = ROOT / ".env"
+if env_path.exists():
+    with open(env_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ[key.strip()] = val.strip().strip('"').strip("'")
+
+
 from src.waveconf.pivots.zigzag import ZigZagDetector
 from src.waveconf.pivots.pivot_schema import SwingType
 from src.waveconf.fib_engine.fibonacci import FibonacciEngine
@@ -90,6 +101,46 @@ LAYERS_DIR         = "data/pivots"
 
 
 # ─────────────────────────────────────────────────────────────
+# Real-time spot price (used across all timeframes)
+# ─────────────────────────────────────────────────────────────
+
+def fetch_spot_price(fallback_price: float = None) -> float:
+    """
+    Fetch the current BTC/USD spot price from a live ticker.
+    Fallback chain: Kraken → Yahoo Finance → provided fallback.
+    """
+    # Try Kraken ticker
+    if CCXT_AVAILABLE:
+        try:
+            import ccxt
+            kraken = ccxt.kraken({'enableRateLimit': True, 'verify': False})
+            ticker = kraken.fetch_ticker('BTC/USD')
+            price = float(ticker['last'])
+            print(f"  [spot] Live price from Kraken: ${price:,.2f}")
+            return price
+        except Exception as e:
+            print(f"  [spot] Kraken ticker failed: {e}")
+
+    # Try Yahoo Finance
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker("BTC-USD")
+        info = ticker.fast_info
+        price = float(info['lastPrice'])
+        print(f"  [spot] Live price from Yahoo Finance: ${price:,.2f}")
+        return price
+    except Exception as e:
+        print(f"  [spot] Yahoo Finance ticker failed: {e}")
+
+    # Fallback to last candle close
+    if fallback_price is not None:
+        print(f"  [spot] Using last candle close as fallback: ${fallback_price:,.2f}")
+        return fallback_price
+
+    raise RuntimeError("Could not fetch live BTC price from any source")
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 1 & 2: Incremental candle fetch + append
 # ─────────────────────────────────────────────────────────────
 
@@ -107,8 +158,6 @@ def fetch_incremental(timeframe: str, full_refetch: bool = False) -> pd.DataFram
     ohlcv_path = os.path.join(OHLCV_DIR, f"BTC_{timeframe}.json")
     columns    = ["timestamp_ms", "open", "high", "low", "close", "volume"]
 
-    exchange = ccxt.binance({'enableRateLimit': True, 'verify': False})
-
     # Load existing history
     existing_df = pd.DataFrame(columns=columns)
     if os.path.exists(ohlcv_path) and not full_refetch:
@@ -120,35 +169,98 @@ def fetch_incremental(timeframe: str, full_refetch: bool = False) -> pd.DataFram
         print(f"  [fetch] {timeframe}: existing {len(existing_df):,} bars, "
               f"fetching from {datetime.utcfromtimestamp(since/1000).strftime('%Y-%m-%d %H:%M')} UTC")
     else:
-        # First-time fetch or full refetch — start from Binance launch
+        # First-time fetch or full refetch — start from 2017-08-17
+        import ccxt
+        exchange = ccxt.kraken({'enableRateLimit': True, 'verify': False})
         since = exchange.parse8601('2017-08-17T00:00:00Z')
-        print(f"  [fetch] {timeframe}: full history fetch from 2017-08-17...")
+        print(f"  [fetch] {timeframe}: full history fetch starting from 2017-08-17...")
 
-    # Fetch new candles in batches
     new_candles = []
-    now_ms      = exchange.milliseconds()
 
-    while since < now_ms:
-        try:
-            batch = exchange.fetch_ohlcv(
-                'BTC/USDT',
+    # Step A: Try Kraken (Primary source — completely unblocked and has all timeframes)
+    try:
+        import ccxt
+        kraken = ccxt.kraken({'enableRateLimit': True, 'verify': False})
+        print("  [fetch] Fetching from Kraken...")
+        now_ms = kraken.milliseconds()
+        since_temp = since
+        while since_temp < now_ms:
+            batch = kraken.fetch_ohlcv(
+                'BTC/USD',
                 timeframe = meta['ccxt_tf'],
-                since     = since,
+                since     = since_temp,
                 limit     = 1000,
             )
             if not batch:
                 break
             new_candles.extend(batch)
-            since = batch[-1][0] + meta['ms_per_bar']
+            since_temp = batch[-1][0] + meta['ms_per_bar']
             if len(batch) < 1000:
-                break   # reached the present
-        except Exception as e:
-            print(f"  [fetch] Error: {e}")
-            break
+                break
+        if new_candles:
+            print(f"  [fetch] Successfully fetched {len(new_candles)} candles from Kraken.")
+    except Exception as e_kraken:
+        print(f"  [fetch] Kraken primary fetch failed: {e_kraken}")
+        new_candles = []
+
+    # Step B: Fallback 1 — Try Yahoo Finance (only for 1D/1W)
+    if not new_candles and timeframe in ('1D', '1W'):
+        try:
+            import yfinance as yf
+            print("  [fetch] Trying Yahoo Finance fallback...")
+            ticker = yf.Ticker("BTC-USD")
+            start_date = datetime.utcfromtimestamp(since / 1000).strftime('%Y-%m-%d')
+            yf_tf = '1d' if timeframe == '1D' else '1wk'
+            yf_df = ticker.history(start=start_date, interval=yf_tf)
+            for idx, row in yf_df.iterrows():
+                ts_ms = int(idx.timestamp() * 1000)
+                new_candles.append([
+                    ts_ms,
+                    round(float(row['Open']), 2),
+                    round(float(row['High']), 2),
+                    round(float(row['Low']), 2),
+                    round(float(row['Close']), 2),
+                    round(float(row['Volume']), 2)
+                ])
+            if new_candles:
+                print(f"  [fetch] Successfully fetched {len(new_candles)} candles from Yahoo Finance fallback.")
+        except Exception as e_yf:
+            print(f"  [fetch] Yahoo Finance fallback failed: {e_yf}")
+            new_candles = []
+
+    # Step C: Fallback 2 — Try Binance (final fallback — might require VPN)
+    if not new_candles:
+        try:
+            import ccxt
+            binance = ccxt.binance({'enableRateLimit': True, 'verify': False})
+            print("  [fetch] Trying Binance fallback (VPN might be required)...")
+            now_ms = binance.milliseconds()
+            since_temp = since
+            while since_temp < now_ms:
+                batch = binance.fetch_ohlcv(
+                    'BTC/USDT',
+                    timeframe = meta['ccxt_tf'],
+                    since     = since_temp,
+                    limit     = 1000,
+                )
+                if not batch:
+                    break
+                new_candles.extend(batch)
+                since_temp = batch[-1][0] + meta['ms_per_bar']
+                if len(batch) < 1000:
+                    break
+            if new_candles:
+                print(f"  [fetch] Successfully fetched {len(new_candles)} candles from Binance fallback.")
+        except Exception as e_binance:
+            print(f"  [fetch] Binance fallback failed: {e_binance}")
+            new_candles = []
+
 
     if not new_candles:
-        print(f"  [fetch] No new candles for {timeframe} — already up to date")
+        print(f"  [fetch] No new candles for {timeframe} — already up to date or all sources failed")
         return existing_df
+
+
 
     new_df = pd.DataFrame(new_candles, columns=columns)
     print(f"  [fetch] {len(new_df)} new candles fetched")
@@ -344,7 +456,7 @@ def run_tft_inference(
 # Step 7: Fibonacci cluster targets
 # ─────────────────────────────────────────────────────────────
 
-def compute_fib_targets(macro_pivots) -> Optional[Dict]:
+def compute_fib_targets(macro_pivots, version: str = "v5_relaxed") -> Optional[Dict]:
     """
     Auto-detect directional context from the last confirmed macro pivot,
     then compute the dual Fibonacci cluster.
@@ -383,12 +495,26 @@ def compute_fib_targets(macro_pivots) -> Optional[Dict]:
         if b_low_pivot is None:
             print("  [fib] No B low found before C top")
             return None
+        
+        a_high_pivot = max(
+            (p for p in highs if p.bar_index < b_low_pivot.bar_index),
+            key=lambda p: p.bar_index,
+            default=None,
+        )
+        ab_range = abs(a_high_pivot.price - b_low_pivot.price) if a_high_pivot else None
+        a_price = a_high_pivot.price if a_high_pivot else None
+        c_top_val = c_top_pivot.price
+        b_low_val = b_low_pivot.price
+
         invalidation = round(c_top_pivot.price * (1 + engine.invalidation_buffer), 2)
         c_date = pd.to_datetime(c_top_pivot.timestamp_ms, unit='ms').date()
         b_date = pd.to_datetime(b_low_pivot.timestamp_ms, unit='ms').date()
-        print(f"  [fib] Direction: BEARISH")
+        print(f"  [fib] Direction: BEARISH (version: {version})")
         print(f"  [fib] C top:    ${c_top_pivot.price:>12,.2f}  ({c_date})")
         print(f"  [fib] B low:    ${b_low_pivot.price:>12,.2f}  ({b_date})")
+        if a_high_pivot:
+            a_date = pd.to_datetime(a_high_pivot.timestamp_ms, unit='ms').date()
+            print(f"  [fib] A high:   ${a_high_pivot.price:>12,.2f} ({a_date})")
         print(f"  [fib] Invalidated above: ${invalidation:,.2f}")
     else:
         # BULLISH: last pivot is a LOW - project up
@@ -402,18 +528,35 @@ def compute_fib_targets(macro_pivots) -> Optional[Dict]:
         if b_low_pivot is None:
             print("  [fib] No B high found before C bottom")
             return None
+            
+        a_low_pivot = max(
+            (p for p in lows if p.bar_index < b_low_pivot.bar_index),
+            key=lambda p: p.bar_index,
+            default=None,
+        )
+        ab_range = abs(a_low_pivot.price - b_low_pivot.price) if a_low_pivot else None
+        a_price = a_low_pivot.price if a_low_pivot else None
+        c_top_val = b_low_pivot.price
+        b_low_val = c_top_pivot.price
+
         invalidation = round(c_top_pivot.price * (1 - engine.invalidation_buffer), 2)
         c_date = pd.to_datetime(c_top_pivot.timestamp_ms, unit='ms').date()
         b_date = pd.to_datetime(b_low_pivot.timestamp_ms, unit='ms').date()
-        print(f"  [fib] Direction: BULLISH")
+        print(f"  [fib] Direction: BULLISH (version: {version})")
         print(f"  [fib] C bottom: ${c_top_pivot.price:>12,.2f}  ({c_date})")
         print(f"  [fib] B high:   ${b_low_pivot.price:>12,.2f}  ({b_date})")
+        if a_low_pivot:
+            a_date = pd.to_datetime(a_low_pivot.timestamp_ms, unit='ms').date()
+            print(f"  [fib] A low:    ${a_low_pivot.price:>12,.2f} ({a_date})")
         print(f"  [fib] Invalidated below: ${invalidation:,.2f}")
 
     cluster = engine.dual_cluster(
-        c_top     = c_top_pivot.price,
-        b_low     = b_low_pivot.price,
+        c_top     = c_top_val,
+        b_low     = b_low_val,
         direction = direction,
+        ab_range  = ab_range,
+        a_price   = a_price,
+        version   = version,
     )
     print(f"  [fib] {cluster}")
 
@@ -431,6 +574,7 @@ def compute_fib_targets(macro_pivots) -> Optional[Dict]:
         "scenario_b_price": cluster.scenario_b.price,
         "invalidation":     invalidation,
     }
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -458,10 +602,11 @@ def apply_calendar_risk(strength: float, window_df: pd.DataFrame, lookback: int 
         risk_flag = "Post-FOMC (+10% boost)"
     elif within_2d == 1:
         strength  = strength * 0.60
-        risk_flag = "High-impact event in <= 2 days — HIGH RISK (×0.60)"
+        risk_flag = "High-impact event in 2 days or less — HIGH RISK (×0.60)"
     elif within_5d == 1:
         strength  = strength * 0.80
-        risk_flag = "High-impact event in <= 5 days — moderate risk (×0.80)"
+        risk_flag = "High-impact event in 5 days or less — moderate risk (×0.80)"
+
 
     return round(strength, 4), risk_flag
 
@@ -471,7 +616,7 @@ def apply_calendar_risk(strength: float, window_df: pd.DataFrame, lookback: int 
 # ─────────────────────────────────────────────────────────────
 
 def init_db(db_path: str):
-    """Create predictions table if not exists."""
+    """Create predictions table if not exists and run migrations if needed."""
     os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else '.', exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute("""
@@ -479,6 +624,7 @@ def init_db(db_path: str):
             id                    INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp             DATETIME DEFAULT CURRENT_TIMESTAMP,
             timeframe             TEXT,
+            direction             TEXT,
             btc_close_at_signal   REAL,
             cluster_valid         INTEGER,
             cluster_upper         REAL,
@@ -503,8 +649,20 @@ def init_db(db_path: str):
             prediction_correct    INTEGER
         )
     """)
+
+    # Run migration to add direction if it's missing in existing database
+    cursor = conn.execute("PRAGMA table_info(predictions)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "direction" not in columns:
+        try:
+            conn.execute("ALTER TABLE predictions ADD COLUMN direction TEXT")
+            print("  [db] Migration: Added 'direction' column to predictions table.")
+        except Exception as e:
+            print(f"  [db] Migration failed: {e}")
+
     conn.commit()
     conn.close()
+
 
 
 def write_prediction(db_path: str, record: Dict):
@@ -525,28 +683,112 @@ def write_prediction(db_path: str, record: Dict):
 # ─────────────────────────────────────────────────────────────
 
 def send_telegram(message: str, dry_run: bool = False):
-    """Send Telegram message. Skips silently in dry-run mode."""
+    """Send Telegram message to all configured chat IDs. Skips silently in dry-run mode."""
     if dry_run:
         print("\n  [telegram] DRY RUN — message that would be sent:")
         print("  " + "\n  ".join(message.split("\n")))
         return
 
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id   = os.environ.get("TELEGRAM_CHAT_ID")
+    chat_ids_str = os.environ.get("TELEGRAM_CHAT_IDS") or os.environ.get("TELEGRAM_CHAT_ID")
 
-    if not bot_token or not chat_id:
-        print("  [telegram] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — skipping alert")
+    if not bot_token or not chat_ids_str:
+        print("  [telegram] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_IDS not set — skipping alert")
         return
 
+    chat_ids = [cid.strip() for cid in chat_ids_str.split(",") if cid.strip()]
+
+    import urllib.request
+    for chat_id in chat_ids:
+        try:
+            url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            data = json.dumps({"chat_id": chat_id, "text": message, "parse_mode": "HTML"}).encode()
+            req  = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10)
+            print(f"  [telegram] Alert sent to {chat_id} ✅")
+        except Exception as e:
+            print(f"  [telegram] Failed to send to {chat_id}: {e}")
+
+
+
+def get_economic_calendar_section(timeframe: str) -> Tuple[str, str]:
+    """Fetch next 24h events and format the Economic Risk Calendar and risk warnings."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    start_fetch = now
+    end_fetch = now + timedelta(hours=24)
+    
     try:
-        import urllib.request
-        url  = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        data = json.dumps({"chat_id": chat_id, "text": message, "parse_mode": "HTML"}).encode()
-        req  = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10)
-        print("  [telegram] Alert sent ✅")
+        from src.waveconf.ingestion.investing_api import get_economic_calendar, get_event_priority, parse_utc_to_local, is_high_risk
+        events = get_economic_calendar(start_fetch, end_fetch, "high")
     except Exception as e:
-        print(f"  [telegram] Failed to send: {e}")
+        print(f"  [calendar] Failed to fetch live calendar: {e}")
+        return "", ""
+        
+    if not events:
+        section = (
+            "\n"
+            "📅 <b>Economic Risk Calendar</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "No high impact events scheduled within the next 24 hours.\n"
+        )
+        return section, ""
+        
+    # Sort events by priority first, then chronologically by time
+    def sort_key(x):
+        priority = get_event_priority(x["event_name"], x["importance"])
+        return (priority, x.get("occurrence_time") or "")
+        
+    events.sort(key=sort_key)
+    
+    critical_events = []
+    high_events = []
+    has_high_risk_event_24h = False
+    
+    for event in events:
+        evt_name = event["event_name"]
+        curr = event["currency"]
+        occ_time_str = event["occurrence_time"]
+        local_dt = parse_utc_to_local(occ_time_str)
+        time_formatted = local_dt.strftime("%H:%M")
+        
+        line = f"• <b>{evt_name}</b> ({curr}) at {time_formatted}"
+        
+        if is_high_risk(evt_name):
+            critical_events.append(line)
+            has_high_risk_event_24h = True
+        else:
+            high_events.append(line)
+            
+    section_lines = [
+        "",
+        "📅 <b>Economic Risk Calendar</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    ]
+    
+    if critical_events:
+        section_lines.append("🔴 <b>CRITICAL:</b>")
+        for line in critical_events:
+            section_lines.append(f"  {line}")
+            
+    if high_events:
+        if critical_events:
+            section_lines.append("")
+        section_lines.append("🟠 <b>HIGH:</b>")
+        for line in high_events:
+            section_lines.append(f"  {line}")
+            
+    section_text = "\n".join(section_lines) + "\n"
+    
+    warning_text = ""
+    if timeframe == "1D" and has_high_risk_event_24h:
+        warning_text = (
+            "\n"
+            "⚠ Elevated Macro Risk: Major economic release scheduled within 24 hours. "
+            "Interpret Elliott Wave counts, trend continuation signals, and breakout setups with increased caution.\n"
+        )
+        
+    return section_text, warning_text
 
 
 def build_telegram_message(
@@ -556,6 +798,7 @@ def build_telegram_message(
     adj_strength: float,
     risk_flag:    str,
     current_price: float,
+    version:      str = "v5_relaxed",
 ) -> str:
     """Format the Telegram alert per Section 11 spec."""
     direction = fib_result.get('direction', 'bearish') if fib_result else 'bearish'
@@ -565,7 +808,7 @@ def build_telegram_message(
     valid = fib_result and fib_result.get("cluster_valid")
 
     lines = [
-        f"{direction_emoji} <b>BTC ELLIOTT WAVE FORECAST [{timeframe}]</b>",
+        f"{direction_emoji} <b>BTC ELLIOTT WAVE FORECAST [{timeframe}] ({version})</b>",
         f"<code>{now}</code>",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"💰 Current price: <b>${current_price:,.2f}</b>",
@@ -617,13 +860,19 @@ def build_telegram_message(
                         match = " ✅ inside cluster"
                 lines.append(f"  t+{h:2d}d  q10=${q10:>9,.0f}  q50=${q50:>9,.0f}  q90=${q90:>9,.0f}{match}")
 
+    calendar_section, warning_section = get_economic_calendar_section(timeframe)
+    if warning_section:
+        lines.append(warning_section)
+    if calendar_section:
+        lines.append(calendar_section)
+
     lines += [
-        "",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"⏰ Next update in {'6h' if timeframe == '4H' else '12h'}",
     ]
 
     return "\n".join(lines)
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -636,6 +885,7 @@ def run_pipeline(
     full_refetch: bool = False,
     model_path:   str  = DEFAULT_MODEL_PATH,
     db_path:      str  = SQLITE_PATH,
+    version:      str  = "v5_relaxed",
 ) -> Dict:
     """
     Run the full 10-step inference pipeline for one timeframe.
@@ -643,7 +893,7 @@ def run_pipeline(
     """
     print(f"\n{'='*60}")
     print(f"  run_daily_analysis | BTC {timeframe} | "
-          f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+      f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"{'='*60}")
 
     # Step 1+2: Fetch + append
@@ -662,14 +912,15 @@ def run_pipeline(
     tft_result = run_tft_inference(window_df, model_path)
 
     # Step 7: Fibonacci cluster
-    fib_result = compute_fib_targets(macro_pivots)
+    fib_result = compute_fib_targets(macro_pivots, version=version)
 
     # Step 8: Calendar risk adjustment
     raw_strength = fib_result['cluster_strength'] if fib_result else 0.0
+
     adj_strength, risk_flag = apply_calendar_risk(raw_strength, window_df)
 
-    # Current price
-    current_price = float(df_layers['close'].iloc[-1])
+    candle_close = float(df_layers['close'].iloc[-1])
+    current_price = fetch_spot_price(fallback_price=candle_close)
 
     # Step 9: SQLite write
     record = {
@@ -703,7 +954,6 @@ def run_pipeline(
     else:
         print("  [db] DRY RUN — SQLite write skipped")
 
-    # Step 10: Telegram
     message = build_telegram_message(
         timeframe     = timeframe,
         fib_result    = fib_result,
@@ -711,7 +961,9 @@ def run_pipeline(
         adj_strength  = adj_strength,
         risk_flag     = risk_flag,
         current_price = current_price,
+        version       = version,
     )
+
     # Alert if confluence confirmed or significant structure found
     should_alert = fib_result is not None
     if should_alert:
@@ -756,6 +1008,12 @@ def main():
         default=SQLITE_PATH,
         help=f"Path to SQLite predictions database (default: {SQLITE_PATH})"
     )
+    parser.add_argument(
+        '--version',
+        default='v5_relaxed',
+        choices=['v1_buggy', 'v4_log', 'v5_relaxed'],
+        help="Fibonacci math version. Default: v5_relaxed"
+    )
     args = parser.parse_args()
 
     os.chdir(ROOT)
@@ -769,6 +1027,7 @@ def main():
                 full_refetch = args.full_refetch,
                 model_path   = args.model,
                 db_path      = args.db,
+                version      = args.version,
             )
             tf_results[tf] = res
         except Exception as e:
