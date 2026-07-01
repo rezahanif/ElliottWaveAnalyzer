@@ -1,6 +1,6 @@
 # WaveConf — Bitcoin Elliott Wave Analysis System
 
-> Replicating the analytical process of a professional trader using rule-based Elliott Wave detection, Fibonacci confluence, a Temporal Fusion Transformer, and planetary/economic cycle features — updated every 6 hours on a home Linux server.
+> This project is inspired by the analytical framework employed by **Asst. Prof. Dr. Gema Goeyardi, S.E., M.M.**, which combines rule-based Elliott Wave detection, Fibonacci confluence analysis, and planetary, lunar, and macroeconomic cycle indicators. The objective is to model and augment this analytical process using a Temporal Fusion Network (TFN), deployed on a home Linux server with six-hour automated updates and Telegram integration for real-time notifications.
 
 ---
 
