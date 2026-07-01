@@ -1,6 +1,6 @@
 # WaveConf — Bitcoin Elliott Wave Analysis System
 
-> This project is inspired by the analytical framework employed by **Asst. Prof. Dr. Gema Goeyardi, S.E., M.M.**, which combines rule-based Elliott Wave detection, Fibonacci confluence analysis, and planetary, lunar, and macroeconomic cycle indicators. The objective is to model and augment this analytical process using a Temporal Fusion Network (TFN), deployed on a home Linux server with six-hour automated updates and Telegram integration for real-time notifications.
+> This project is inspired by the analytical framework employed by **Asst. Prof. Dr. Gema Goeyardi, CAT,CFTe,MFTA founder of ASTRONACCI TIME TRADING which combines rule-based Elliott Wave detection, Fibonacci**, which combines rule-based Elliott Wave detection, Fibonacci confluence analysis, and planetary, lunar, and macroeconomic cycle indicators. The objective is to model and augment this analytical process using a Temporal Fusion Transformer (TFT), deployed on a home Linux server with six-hour automated updates and Telegram integration for real-time notifications.
 
 ---
 
